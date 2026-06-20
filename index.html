@@ -1,0 +1,210 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <title>Aviator Professional</title>
+</head>
+<body class="bg-[#0b0c11] text-white font-sans overflow-hidden select-none">
+    <div class="max-w-6xl mx-auto p-4 grid grid-cols-12 gap-4">
+        
+        <div id="history" class="col-span-12 flex gap-2 overflow-x-auto p-2 bg-[#15161d] rounded-lg min-h-[40px]"></div>
+
+        <div class="col-span-12 md:col-span-3 bg-[#15161d] p-4 rounded-xl h-[480px] flex flex-col border border-gray-900">
+            <h2 class="text-xs font-bold text-gray-500 mb-4 uppercase tracking-wider">Live Users</h2>
+            <div id="betList" class="flex-1 overflow-y-auto space-y-2 text-sm"></div>
+        </div>
+
+        <div class="col-span-12 md:col-span-9 space-y-4">
+            <div class="relative bg-[#15161d] rounded-2xl border border-gray-800 overflow-hidden h-[330px]">
+                <canvas id="canvas" class="absolute inset-0 w-full h-full"></canvas>
+                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <h1 id="mult" class="text-6xl font-black italic">1.00x</h1>
+                    <p id="status" class="text-red-500 font-bold uppercase tracking-widest mt-2 text-xs"></p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-[#1b1c26] p-4 rounded-xl border border-gray-800">
+                    <input id="amt" type="number" value="100" class="w-full bg-black/50 border border-gray-700 rounded p-2 mb-2 text-center text-green-400 font-bold focus:outline-none">
+                    <button id="mainBtn" class="w-full py-4 rounded-xl font-black text-xl transition-all cursor-pointer">BET</button>
+                </div>
+                <div class="bg-[#1b1c26] p-4 rounded-xl opacity-30 flex items-center justify-center text-gray-500 italic border border-dashed border-gray-800">Double Slot Enabled</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const multEl = document.getElementById('mult');
+        const statusEl = document.getElementById('status');
+        const mainBtn = document.getElementById('mainBtn');
+        const amtEl = document.getElementById('amt');
+        const historyEl = document.getElementById('history');
+        const betListEl = document.getElementById('betList');
+        
+        // আপনার স্ক্রিনশটের মতো কাস্টমাইজড প্লেয়ার ভ্যালু জেনারেশন
+        const user = "SpribePlayer_" + Math.floor(Math.random() * 8999 + 1000);
+        let isAdmin = false;
+
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function drawCurve(multiplier) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (multiplier <= 1.0) return;
+            
+            const progress = Math.min((multiplier - 1) / 5, 1);
+            let targetX = canvas.width * progress;
+            let targetY = canvas.height * (1 - progress * 0.8);
+
+            let grad = ctx.createLinearGradient(0, canvas.height, targetX, targetY);
+            grad.addColorStop(0, "rgba(225, 29, 72, 0)");
+            grad.addColorStop(1, "rgba(225, 29, 72, 0.15)");
+            
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height);
+            ctx.quadraticCurveTo(targetX / 2, canvas.height, targetX, targetY);
+            ctx.lineTo(targetX, canvas.height);
+            ctx.fillStyle = grad; ctx.fill();
+
+            ctx.strokeStyle = "#e11d48";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height);
+            ctx.quadraticCurveTo(targetX / 2, canvas.height, targetX, targetY);
+            ctx.stroke();
+
+            ctx.fillStyle = "#ffffff";
+            ctx.shadowBlur = 10; ctx.shadowColor = "#e11d48";
+            ctx.beginPath(); ctx.arc(targetX, targetY, 6, 0, 2 * Math.PI); ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+
+        function renderUI(state) {
+            if (state.status === "BETTING") {
+                multEl.innerText = `00:${state.timer < 10 ? '0' + state.timer : state.timer}`;
+                multEl.className = "text-5xl font-black text-yellow-500 animate-pulse";
+                statusEl.innerText = "WAITING FOR NEXT ROUND";
+                
+                const alreadyBet = state.activeBets.some(b => b.id === socket.id);
+                if (alreadyBet) {
+                    mainBtn.innerText = "WAITING...";
+                    mainBtn.className = "w-full py-4 bg-orange-600 text-white rounded-xl font-black cursor-not-allowed";
+                    mainBtn.disabled = true;
+                } else {
+                    mainBtn.innerText = "BET";
+                    mainBtn.className = "w-full py-4 bg-green-500 text-black rounded-xl font-black hover:bg-green-400 cursor-pointer";
+                    mainBtn.disabled = false;
+                }
+            } 
+            else if (state.status === "FLYING") {
+                multEl.innerText = state.multiplier.toFixed(2) + "x";
+                multEl.className = "text-6xl font-black text-white";
+                statusEl.innerText = "";
+                
+                const hasBet = state.activeBets.some(b => b.id === socket.id && !b.cashed);
+                if (hasBet) {
+                    mainBtn.innerText = "CASH OUT";
+                    mainBtn.className = "w-full py-4 bg-orange-500 text-white rounded-xl font-black hover:bg-orange-400 cursor-pointer";
+                    mainBtn.disabled = false;
+                } else {
+                    mainBtn.innerText = "FLYING...";
+                    mainBtn.className = "w-full py-4 bg-gray-800 text-gray-500 rounded-xl font-black cursor-not-allowed";
+                    mainBtn.disabled = true;
+                }
+            } 
+            else if (state.status === "CRASHED") {
+                multEl.innerText = state.multiplier.toFixed(2) + "x";
+                multEl.className = "text-6xl font-black text-red-600";
+                statusEl.innerText = "FLEW AWAY!";
+                
+                mainBtn.innerText = "CRASHED";
+                mainBtn.className = "w-full py-4 bg-red-950/40 text-red-700 rounded-xl font-black cursor-not-allowed";
+                mainBtn.disabled = true;
+            }
+
+            // হিস্টোরি জেনারেশন
+            historyEl.innerHTML = '';
+            state.history.forEach(mult => {
+                const pill = document.createElement('span');
+                pill.className = `px-2 py-0.5 rounded text-xs font-bold ${mult >= 2 ? 'bg-purple-900 text-purple-200' : 'bg-blue-900 text-blue-200'}`;
+                pill.innerText = mult.toFixed(2) + 'x';
+                historyEl.appendChild(pill);
+            });
+
+            // লাইভ ইউজার ভ্যালু ম্যাপিং (আপনার স্ক্রিনশটের অবজেক্ট স্ট্রাকচার অনুযায়ী)
+            betListEl.innerHTML = '';
+            state.activeBets.forEach(bet => {
+                const item = document.createElement('div');
+                item.className = `flex justify-between p-2 rounded text-xs border ${bet.cashed ? 'bg-green-950/20 text-green-400 border-green-900/40' : 'bg-gray-900 text-gray-300 border-transparent'}`;
+                item.innerHTML = `<span>${bet.user}</span> <span class="font-bold">${bet.amount} ৳</span>`;
+                if (bet.cashed) {
+                    item.innerHTML += `<span class="font-bold bg-green-500/20 px-1 rounded ml-1">${bet.cashedAt.toFixed(2)}x</span>`;
+                }
+                betListEl.appendChild(item);
+            });
+
+            if (state.status === "FLYING" || state.status === "CRASHED") {
+                drawCurve(state.multiplier);
+            } else {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        mainBtn.addEventListener('click', (e) => {
+            if(!e.isTrusted) return;
+            if (mainBtn.innerText === "BET") {
+                socket.emit('place_bet', { user, amount: amtEl.value });
+                mainBtn.disabled = true;
+                mainBtn.innerText = "WAITING...";
+            } else if (mainBtn.innerText === "CASH OUT") {
+                socket.emit('claim_cashout');
+                mainBtn.disabled = true;
+            }
+        });
+
+        // কিবোর্ড শর্টকাট দিয়ে অ্যাডমিন লগইন (Ctrl + Shift + A)
+        window.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+                const pwd = prompt('Admin Access Key:');
+                if (pwd) socket.emit('admin_login', pwd);
+            }
+        });
+
+        socket.on('admin_ok', (ok) => {
+            if (!ok) return alert('Access Denied');
+            isAdmin = true;
+            const div = document.createElement('div');
+            div.id = 'adminPred';
+            div.style.cssText = 'position:fixed; top:20px; left:20px; background:rgba(15,15,25,0.95); color:#00ffaa; padding:12px; border:1px solid #00ffaa; border-radius:10px; z-index:9999; font-family:monospace; font-size:14px;';
+            document.body.appendChild(div);
+        });
+
+        socket.on('admin_sync', (state) => {
+            if (!isAdmin) return;
+            const el = document.getElementById('adminPred');
+            if (!el) return;
+            if (state.status === 'BETTING') el.innerHTML = `Next: <b class="text-white">${state.crashPoint.toFixed(2)}x</b>`;
+            else if (state.status === 'FLYING') el.innerHTML = `Target: <b class="text-white">${state.crashPoint.toFixed(2)}x</b> (Live: ${state.multiplier}x)`;
+        });
+
+        socket.on('sync', (state) => renderUI(state));
+        socket.on('cashout_ok', () => {
+            mainBtn.disabled = true;
+            mainBtn.innerText = "SUCCESS";
+        });
+    </script>
+</body>
+</html>
